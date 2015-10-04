@@ -1,0 +1,434 @@
+# Random Forest Modelling of the Lake Erie microbial community
+              
+This is a demo of how to run regression and classification random forest models with microbial community datasets in R. The slides which accompanied this code are available [here]( https://github.com/michberr/randomforest-microbe/blob/master/randomforest_microbe.pdf)
+    
+Much of this code utilizes the [Phyloseq](http://joey711.github.io/phyloseq/) package.       
+
+This page was created with 
+[Rmarkdown](http://rmarkdown.rstudio.com/).
+
+Author: Michelle Berry     
+Date Created: 2/24/15         
+Date Updated: 10/4/15
+
+===================================================================
+
+
+In this tutorial, we are working with illumina 16s data that has already been processed into an [OTU](https://en.wikipedia.org/wiki/Operational_taxonomic_unit) 
+and taxonomy table from the 
+[mothur](http://www.mothur.org/) pipeline. 
+Phyloseq has a variety of 
+[import](http://joey711.github.io/phyloseq/import-data) 
+options if you processed your raw sequence data with a different pipeline.
+
+The data used in this tutorial consists of water samples collected from the Western basin of Lake Erie between May and November 2014. The goal of this dataset was to understand how the bacterial community in Lake Erie shifts during toxic 
+[algal blooms](http://www.glerl.noaa.gov/res/HABs_and_Hypoxia/) 
+caused predominantly by a genus of cyanobacteria called [Microcystis](https://en.wikipedia.org/wiki/Microcystis). 
+Water samples were fractionated to distinguish free-living bacteria, particle-associated bacteria, and larger colonies of blooming cyanobacteria.
+
+# Libraries
+
+```r
+#Load libraries
+library(ggplot2)
+library(vegan)
+library(dplyr)
+library(magrittr)
+library(scales)
+library(grid)
+library(reshape2)
+library(phyloseq)
+library(randomForest)
+library(knitr)
+```
+
+
+```r
+# Set working directory
+setwd("~/chabs/miseq_may2015/analysis/")
+
+# Source code files
+# miseqR.R can be found in this repository
+# habs_functions.R are formatting functions specific to this dataset
+source("miseqR.R")
+source("habs_functions.R")
+
+# Because grey plots are ugly
+theme_set(theme_bw())
+```
+
+# Data import
+
+here we import the mothur shared file, consensus taxonomy file, 
+and our sample metadata and store them in one phyloseq object
+
+```r
+# Import mothur files and sample metadata
+sharedfile = "mothur/allhabs.shared"
+taxfile = "mothur/allhabs.taxonomy"
+metadat = "other/habs_metadata.csv"
+ 
+mothurdata = import_mothur(mothur_shared_file = sharedfile,
+  mothur_constaxonomy_file = taxfile)
+
+# Import sample metadata
+metadata <- read.csv(metadat)
+sampdat <- sample_data(metadata)
+rownames(sampdat) <- sampdat$SampleID
+  
+# Merge mothurdata object with sample metadata
+erie.merge <- merge_phyloseq(mothurdata, sampdat)
+erie.merge
+```
+
+```
+## phyloseq-class experiment-level object
+## otu_table()   OTU Table:         [ 19656 taxa and 305 samples ]
+## sample_data() Sample Data:       [ 305 samples by 39 sample variables ]
+## tax_table()   Taxonomy Table:    [ 19656 taxa by 6 taxonomic ranks ]
+```
+Now we have a phyloseq object called erie.merge. 
+
+Before we move on with analysis, we need to do some basic reformatting and filtering 
+
+```r
+colnames(tax_table(erie.merge))
+```
+
+```
+## [1] "Rank1" "Rank2" "Rank3" "Rank4" "Rank5" "Rank6"
+```
+
+```r
+# These taxonomy names are not helpful, so let's rename them
+colnames(tax_table(erie.merge)) <- c("Kingdom", "Phylum", "Class",
+  "Order", "Family", "Genus")
+  
+# Filter out non-samples (i.e. water, mock, blanks) 
+# Note, there is a column in my metadata named "Type"
+erie.merge %>%
+  subset_samples(Type == "sample") %>%
+  subset_samples(Date != "8/11") -> erie # bad samples from this date
+
+# prune taxa which were only present in removed samples
+erie <- prune_taxa(taxa_sums(erie) > 0, erie)
+
+# Filter out non-bacteria, chloroplasts and mitochondria 
+# You may have done this already in mothur, but it's good to check
+erie %>%
+  subset_taxa(Kingdom == "Bacteria" & 
+              Family != "mitochondria" & 
+              Class != "Chloroplast") -> erie
+
+erie
+```
+
+```
+## phyloseq-class experiment-level object
+## otu_table()   OTU Table:         [ 15062 taxa and 285 samples ]
+## sample_data() Sample Data:       [ 285 samples by 39 sample variables ]
+## tax_table()   Taxonomy Table:    [ 15062 taxa by 6 taxonomic ranks ]
+```
+
+# Classification rf: modelling algal-associated vs free-living
+
+For this random forest we want to build a model which will classify samples based on the location they were taken from. We will compare two sites: one is nearshore and in the densest part of the bloom, and the other is offshore on the edge of the bloom.  In doing this, we can pull out which OTUs seem to be associated with nearshore/high bloom sites vs offshore/low bloom sites.
+
+First, we need to do a few things to filter our data and put it in the right format.
+The first step is to subset our samples to just the free-living and algal/particle-associated 
+algae. Next, we scale our reads by normalizing to 15000 reads which is slightly below our smallest library size
+
+```r
+# Set minlib
+minlib = 15000
+
+# Select unfractionated samples (whole bacterial community)
+# Select our two sites; WE2 is nearshore, WE4 is offshore
+# Scale reads to minlib library size
+erie %>%
+  subset_samples(Fraction == "CNA") %>%
+  subset_samples(Station %in% c("WE2", "WE4")) %>%
+  scale_reads(n = minlib, round = "round") -> sites.scale   
+```
+
+
+Lets make some barplots to get a sense of what these communities look like. Here are some barplots of phylum composition from the two sites
+
+
+```r
+# Glom at phylum level, prune out taxa < 2%, and format
+sites.scale %>%
+  taxglom_and_melt(taxrank = "Phylum", prune = 0.02) %>%
+  habs_format() -> sites.long
+
+# Set Colors (RColorBrewer)
+phy <- c(Acidobacteria="#4D4D4D", Actinobacteria="#ff7f00", 
+         Armatimonadetes="#ffff99", Bacteroidetes="#6a3d9a", 
+         Candidate_division_SR1 ="#b15928", Chlorobi="#cab2d6",
+         Chloroflexi="#B2DF8A", Cyanobacteria="#33A02C",
+         Gemmatimonadetes="#fdbf6f", Planctomycetes="#A6CEE3",
+         Proteobacteria="#1F78B4", unclassified="#fb9a99", 
+         Verrucomicrobia ="#e31a1c") 
+
+# Stacked barplot 
+ggplot(sites.long, aes(x = Date, y = Abundance, fill = Phylum)) + 
+  facet_grid(Station~.) + 
+  geom_bar(stat = "identity") +
+  geom_bar(
+    stat = "identity", 
+    position = "fill", 
+    colour = "black", 
+    show_guide = FALSE
+  ) + 
+  scale_fill_manual(values = phy) +
+  stackbar_theme +
+  guides(fill = guide_legend(reverse = TRUE, keywidth = 1, keyheight = 1)) +
+  xlab("") +
+  ylab("Relative Abundance (Phyla > 2%) \n") +
+  ggtitle("Phylum composition of bacteria in Lake Erie\n at a nearshore (WE2) and offshore (WE4) site") 
+```
+
+![](microbe_rf_files/figure-html/unnamed-chunk-4-1.png) 
+     
+At the phylum level there aren't very obvious differences between these two sites, but we would expect them to be much more different at lower taxonomic levels. 
+
+To get a sense of how these sites differ at the OTU level, let's make an NMDS to look at the bray-curtis dissimilarity of these two sites using OTUs.  
+
+
+```r
+# NMDS scores using bray-curtis distance 
+set.seed(1)
+bray.nmds <- ordinate(physeq = sites.scale, method = "NMDS", distance = "bray")
+```
+
+```
+## Square root transformation
+## Wisconsin double standardization
+## Run 0 stress 0.1303245 
+## Run 1 stress 0.1667012 
+## Run 2 stress 0.1433592 
+## Run 3 stress 0.1759191 
+## Run 4 stress 0.1840836 
+## Run 5 stress 0.143441 
+## Run 6 stress 0.1303245 
+## ... New best solution
+## ... procrustes: rmse 3.431547e-05  max resid 0.0001311812 
+## *** Solution reached
+```
+
+```r
+# Plot NMDS and color samples by sites
+plot_ordination(
+  physeq = sites.scale, 
+  ordination = bray.nmds, 
+  color = "Station"
+) + 
+  geom_point(size = 3) + 
+  ggtitle("Offshore and nearshore bacterial communities")
+```
+
+![](microbe_rf_files/figure-html/unnamed-chunk-5-1.png) 
+
+Okay, so our sites are not distinctly clustering separately, but let's run an adonis (permanova) test to see if they have different centroids
+
+
+```r
+adonis.site <- phyloseq_to_adonis(
+  physeq = sites.scale, 
+  dist = "bray", 
+  formula = "Station"
+)
+```
+
+```
+## 
+## Call:
+## adonis(formula = f, data = metadata) 
+## 
+## Permutation: free
+## Number of permutations: 999
+## 
+## Terms added sequentially (first to last)
+## 
+##           Df SumsOfSqs MeanSqs F.Model      R2 Pr(>F)   
+## Station    1    0.3918 0.39182  3.3301 0.08057  0.005 **
+## Residuals 38    4.4711 0.11766         0.91943          
+## Total     39    4.8629                 1.00000          
+## ---
+## Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+## 
+## Permutation test for homogeneity of multivariate dispersions
+## Permutation: free
+## Number of permutations: 999
+## 
+## Response: Distances
+##           Df   Sum Sq   Mean Sq      F N.Perm Pr(>F)
+## Groups     1 0.014324 0.0143238 2.4046    999  0.134
+## Residuals 38 0.226361 0.0059569
+```
+
+Our two sites have significantly different centroids and our test for homogeneity of dispersion did not come back significant, so we can have more assurance that our adonis result is due to real differences in centroids and not just differences in dispersion. Our random forest should be able to pull out the key OTUs that separate these two sites and accurately classify them. 
+
+
+
+Random forests can handle sparse matrices, but we still want to prune out lots of our rare OTUs which are just contributing noise. We will do this by eliminating OTUs with an average relative abundance below 0.0001
+
+```r
+# How many OTUs do we currently have? 
+ntaxa(sites.scale)
+```
+
+```
+## [1] 5452
+```
+
+```r
+# Set prunescale 
+prunescale = 0.0001
+
+# Prune out rare OTUs by mean relative abundance set by prunescale
+tax.mean <- taxa_sums(sites.scale)/nsamples(sites.scale)
+sites.prune <- prune_taxa(tax.mean > prunescale*minlib, sites.scale)
+
+sites.prune
+```
+
+```
+## phyloseq-class experiment-level object
+## otu_table()   OTU Table:         [ 387 taxa and 40 samples ]
+## sample_data() Sample Data:       [ 40 samples by 39 sample variables ]
+## tax_table()   Taxonomy Table:    [ 387 taxa by 6 taxonomic ranks ]
+```
+    
+Now we only have 387 OTU's to put in our model which should speed up computation time and hopefully reduce artifacts in our results.
+
+
+```r
+# Make a dataframe of training data with OTUs as column and samples as rows
+predictors <- t(otu_table(sites.prune))
+dim(predictors)
+```
+
+```
+## [1]  40 387
+```
+We have 40 samples and 387 OTUs
+
+```r
+# Make one column for our outcome/response variable 
+response <- as.factor(sample_data(sites.prune)$Station)
+
+# Combine them into 1 data frame
+rf.data <- data.frame(response, predictors)
+```
+
+
+Now we will use the randomForest package to train and test our random forest model using the "out of bag" error to estimate our model error. OOB is a nice feature of random forest models whereby since the training data is bootstrapped, you only use approximately 2/3 of the data at each iteration. The remaining 1/3 or "out of bag" data can be used to validate your model. This removes the need to use another form of cross-validation such as using a separate validation set or k-folds.     
+
+It is important to set a seed for reproducability
+By default, randomForest uses p/3 variables when building 
+a random forest of regression trees and root(p) 
+variables when building a random forest of classification trees. 
+In this case, p/3 = 129
+
+## Results
+
+```r
+set.seed(2)
+erie.classify <- randomForest(response~., data = rf.data, ntree = 100)
+print(erie.classify)
+```
+
+```
+## 
+## Call:
+##  randomForest(formula = response ~ ., data = rf.data, ntree = 100) 
+##                Type of random forest: classification
+##                      Number of trees: 100
+## No. of variables tried at each split: 19
+## 
+##         OOB estimate of  error rate: 17.5%
+## Confusion matrix:
+##     WE2 WE4 class.error
+## WE2  18   3   0.1428571
+## WE4   4  15   0.2105263
+```
+
+In most statistical learning algorithms, the data needs to be split up into "training" and "test" data. The idea is to train the model on one set of data and test it on a naive set of data. Random forests are nice because you have a built-in way of estimating the model error. Since only ~2/3 of the data is used everytime we bootstrap our samples for construction of the kth tree, we can use the remaining ~1/3 of the data (called the out of bag samples) to test model error 
+
+Our out of bag error is 17.5% . 
+
+
+```r
+# What variables are stored in the output?
+names(erie.classify)
+```
+
+```
+##  [1] "call"            "type"            "predicted"      
+##  [4] "err.rate"        "confusion"       "votes"          
+##  [7] "oob.times"       "classes"         "importance"     
+## [10] "importanceSD"    "localImportance" "proximity"      
+## [13] "ntree"           "mtry"            "forest"         
+## [16] "y"               "test"            "inbag"          
+## [19] "terms"
+```
+
+
+
+## plots 
+Lets make some plots of the most important variables in our model. FOr a classification tree, variable importance is measured by mean decrease in GINI coefficient (measure of node purity) due to that variable
+
+```r
+# Make a data frame with predictor names and their importance
+imp <- importance(erie.classify)
+imp <- data.frame(predictors = rownames(imp), imp)
+
+# Order the predictor levels by importance
+imp.sort <- arrange(imp, desc(MeanDecreaseGini))
+imp.sort$predictors <- factor(imp.sort$predictors, levels = imp.sort$predictors)
+
+# Select the top 10 predictors
+imp.20 <- imp.sort[1:20, ]
+
+
+# ggplot
+ggplot(imp.20, aes(x = predictors, y = MeanDecreaseGini)) +
+  geom_bar(stat = "identity", fill = "indianred") +
+  coord_flip() +
+  ggtitle("Most important OTUs for classifying Erie samples\n into nearshore or offshore")
+```
+
+![](microbe_rf_files/figure-html/unnamed-chunk-12-1.png) 
+
+```r
+# What are those OTUs?
+otunames <- imp.20$predictors
+r <- rownames(tax_table(sites.scale)) %in% otunames
+kable(tax_table(sites.scale)[r, ])
+```
+
+           Kingdom    Phylum            Class                 Order                Family                Genus                 
+---------  ---------  ----------------  --------------------  -------------------  --------------------  ----------------------
+Otu00002   Bacteria   Proteobacteria    Betaproteobacteria    Burkholderiales      Comamonadaceae        Limnohabitans         
+Otu00048   Bacteria   Bacteroidetes     Cytophagia            Cytophagales         Cytophagaceae         Pseudarcicella        
+Otu00130   Bacteria   Bacteroidetes     Sphingobacteriia      Sphingobacteriales   Chitinophagaceae      unclassified          
+Otu00137   Bacteria   Proteobacteria    Betaproteobacteria    TRA3-20              unclassified          unclassified          
+Otu00141   Bacteria   Verrucomicrobia   Spartobacteria        Chthoniobacterales   unclassified          unclassified          
+Otu00185   Bacteria   Verrucomicrobia   Verrucomicrobiae      Verrucomicrobiales   Verrucomicrobiaceae   unclassified          
+Otu00190   Bacteria   Actinobacteria    Acidimicrobiia        Acidimicrobiales     Acidimicrobiaceae     CL500-29_marine_group 
+Otu00206   Bacteria   Proteobacteria    Gammaproteobacteria   Chromatiales         Chromatiaceae         Rheinheimera          
+Otu00217   Bacteria   Bacteroidetes     Sphingobacteriia      Sphingobacteriales   PHOS-HE51             unclassified          
+Otu00221   Bacteria   Verrucomicrobia   Opitutae              Opitutales           Opitutaceae           unclassified          
+Otu00260   Bacteria   Bacteroidetes     Cytophagia            Cytophagales         Cyclobacteriaceae     Algoriphagus          
+Otu00262   Bacteria   Bacteroidetes     Flavobacteriia        Flavobacteriales     Flavobacteriaceae     Flavobacterium        
+Otu00307   Bacteria   Actinobacteria    Actinobacteria        Micrococcales        Microbacteriaceae     MWH-Ta3               
+Otu00418   Bacteria   Bacteroidetes     unclassified          unclassified         unclassified          unclassified          
+Otu00427   Bacteria   Actinobacteria    Acidimicrobiia        Acidimicrobiales     Acidimicrobiaceae     CL500-29_marine_group 
+Otu00483   Bacteria   Proteobacteria    unclassified          unclassified         unclassified          unclassified          
+Otu00485   Bacteria   Proteobacteria    Alphaproteobacteria   Sphingomonadales     Sphingomonadaceae     Sandarakinorhabdus    
+Otu00562   Bacteria   Bacteroidetes     Sphingobacteriia      Sphingobacteriales   Chitinophagaceae      Ferruginibacter       
+Otu00725   Bacteria   Verrucomicrobia   Verrucomicrobiae      Verrucomicrobiales   Verrucomicrobiaceae   Prosthecobacter       
+Otu00729   Bacteria   Actinobacteria    Actinobacteria        Micrococcales        Microbacteriaceae     Candidatus_Aquiluna   
+
+Now we could follow up with this analysis by making some plots of each of these OTUs at our two sites over time and looking into the literature to see whats known about them
