@@ -68,14 +68,14 @@ img {
 <ul>
 <li><a href="#libraries">Libraries</a></li>
 <li><a href="#data-import">Data import</a></li>
-<li><a href="#classification-rf-modelling-algal-associated-vs-free-living">Classification rf: modelling algal-associated vs free-living</a><ul>
+<li><a href="#classification-rf-modeling-sample-locations">Classification rf: modeling sample locations</a><ul>
 <li><a href="#results">Results</a></li>
 <li><a href="#plots">plots</a></li>
 </ul></li>
 </ul>
 </div>
 
-<p>This is a demo of how to run regression and classification random forest models with microbial community datasets in R. The slides which accompanied this code are available <a href="https://github.com/michberr/randomforest-microbe/blob/master/randomforest_microbe.pdf">here</a></p>
+<p>This is a demo of how to run regression and classification random forest models with microbial community datasets in R. The slides which accompanied this code are available <a href="https://github.com/michberr/randomforest-microbe/blob/master/randomforest_microbe.pdf" target="_blank">here</a>.</p>
 <p>Much of this code utilizes the <a href="http://joey711.github.io/phyloseq/">Phyloseq</a> package.</p>
 <p>This page was created with <a href="http://rmarkdown.rstudio.com/">Rmarkdown</a>.</p>
 <p>Author: Michelle Berry<br />Date Created: 2/24/15<br />Date Updated: 10/4/15</p>
@@ -160,8 +160,8 @@ erie</code></pre>
 ## sample_data() Sample Data:       [ 285 samples by 39 sample variables ]
 ## tax_table()   Taxonomy Table:    [ 15062 taxa by 6 taxonomic ranks ]</code></pre>
 </div>
-<div id="classification-rf-modelling-algal-associated-vs-free-living" class="section level1">
-<h1>Classification rf: modelling algal-associated vs free-living</h1>
+<div id="classification-rf-modeling-sample-locations" class="section level1">
+<h1>Classification rf: modeling sample locations</h1>
 <p>For this random forest we want to build a model which will classify samples based on the location they were taken from. We will compare two sites: one is nearshore and in the densest part of the bloom, and the other is offshore on the edge of the bloom. In doing this, we can pull out which OTUs seem to be associated with nearshore/high bloom sites vs offshore/low bloom sites.</p>
 <p>First, we need to do a few things to filter our data and put it in the right format. The first step is to subset our samples to just the free-living and algal/particle-associated algae. Next, we scale our reads by normalizing to 15000 reads which is slightly below our smallest library size</p>
 <pre class="r"><code># Set minlib

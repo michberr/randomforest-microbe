@@ -1,6 +1,8 @@
 # Random Forest Modelling of the Lake Erie microbial community
-              
-This is a demo of how to run regression and classification random forest models with microbial community datasets in R. The slides which accompanied this code are available [here]( https://github.com/michberr/randomforest-microbe/blob/master/randomforest_microbe.pdf)
+                           
+This is a demo of how to run regression and classification random forest models with microbial community datasets in R. The slides which accompanied this code are available 
+<a href="https://github.com/michberr/randomforest-microbe/blob/master/randomforest_microbe.pdf" target="_blank">here</a>.
+
     
 Much of this code utilizes the [Phyloseq](http://joey711.github.io/phyloseq/) package.       
 
@@ -130,7 +132,7 @@ erie
 ## tax_table()   Taxonomy Table:    [ 15062 taxa by 6 taxonomic ranks ]
 ```
 
-# Classification rf: modelling algal-associated vs free-living
+# Classification rf: modeling sample locations
 
 For this random forest we want to build a model which will classify samples based on the location they were taken from. We will compare two sites: one is nearshore and in the densest part of the bloom, and the other is offshore on the edge of the bloom.  In doing this, we can pull out which OTUs seem to be associated with nearshore/high bloom sites vs offshore/low bloom sites.
 
